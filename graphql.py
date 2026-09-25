@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpcloak
 import requests
 
-WEBHOOK = "https://discord.com/api/webhooks/1491768492385632416/r5gmnnlsrnQxQVeRJ8E3a7W56XfkUYr3DCU-uuuYAzsCcGzT-gcpfkehzt4RCeNvM3QV"
+WEBHOOK = ""
 RETRY_DELAY = 10
 WALMART_ONLY = True
 CONFIRM_CHECKS = 3

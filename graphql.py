@@ -2,6 +2,7 @@ import time
 import os
 import json
 import random
+import unicodedata
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -21,6 +22,8 @@ QUEUE_ALERTS = True
 QUEUE_HITS = 3
 QUEUE_WINDOW = 120
 QUEUE_CLEAR = 300
+INCLUDE = ["pokemon"]
+EXCLUDE = ["ultra pro", "deck box", "sleeve", "binder", "playmat", "portfolio", "for pokemon"]
 
 BASE = "https://www.walmart.ca"
 OFFERS_HASH = "c6e2530e3fe0b78b46be3c528c11b89d9958f3a36d1ae5698a26a77dbd917ddd"
@@ -127,6 +130,11 @@ def new_session():
     return session
 
 
+def wanted(name):
+    text = "".join(c for c in unicodedata.normalize("NFD", (name or "").lower()) if unicodedata.category(c) != "Mn")
+    return any(w in text for w in INCLUDE) and not any(w in text for w in EXCLUDE)
+
+
 def parse_item(x):
     price = x.get("priceInfo") or {}
     stock = (x.get("availabilityStatusV2") or {}).get("value") or ""
@@ -161,7 +169,7 @@ def fetch(session):
     if stacks is None:
         return None, "no searchResult in response: " + str(body.get("errors") or "")[:120]
     items = [x for stack in stacks for x in stack.get("itemsV2") or stack.get("items") or []]
-    return [parse_item(x) for x in items if x.get("__typename") == "Product"], ""
+    return [parse_item(x) for x in items if x.get("__typename") == "Product" and wanted(x.get("name"))], ""
 
 
 def walmart_offer(session, item):
@@ -215,17 +223,25 @@ def walmart_offer(session, item):
             stack.extend(node)
     if not offers:
         return None, "stock check returned no offers"
+    walmart = None
+    cheapest = None
     for offer in offers:
         seller = (offer.get("sellerDisplayName") or offer.get("sellerName") or "").strip()
-        if seller.lower() != "walmart":
-            continue
         options = [o for o in offer.get("fulfillmentOptions") or [] if isinstance(o, dict)]
         qty = max((o.get("availableQuantity") or 0 for o in options), default=0)
-        limit = next((o.get("orderLimit") or o.get("maxOrderQuantity") for o in options if o.get("orderLimit") or o.get("maxOrderQuantity")), None)
-        price = ((offer.get("priceInfo") or {}).get("currentPrice") or {}).get("priceString")
-        return {"qty": qty, "limit": limit, "price": price, "offer_id": offer.get("offerId")}, ""
-    return {"qty": 0, "limit": None, "price": None, "offer_id": None}, f"no Walmart offer ({len(offers)} resellers)"
-
+        price = (offer.get("priceInfo") or {}).get("currentPrice") or {}
+        if offer.get("sellerType") == "INTERNAL" or seller.lower() == "walmart":
+            walmart = (offer, options, qty, price)
+            continue
+        if qty and isinstance(price.get("price"), (int, float)) and (cheapest is None or price["price"] < cheapest[1]):
+            cheapest = (seller, price["price"], price.get("priceString"))
+    if walmart is None:
+        return {"qty": 0, "limit": None, "price": None, "offer_id": None}, f"no Walmart offer ({len(offers)} resellers)"
+    offer, options, qty, price = walmart
+    limit = next((o.get("orderLimit") or o.get("maxOrderQuantity") for o in options if o.get("orderLimit") or o.get("maxOrderQuantity")), None)
+    if qty and cheapest and isinstance(price.get("price"), (int, float)) and cheapest[1] < price["price"]:
+        return {"qty": 0, "limit": None, "price": None, "offer_id": None}, f"Walmart undercut by {cheapest[0]} ({cheapest[2]} vs Walmart {price.get('priceString')}, Walmart has {qty})"
+    return {"qty": qty, "limit": limit, "price": price.get("priceString"), "offer_id": offer.get("offerId")}, ""
 
 def save_418(text):
     try:
@@ -373,7 +389,7 @@ def main():
                 continue
             if not offer["qty"]:
                 if prev is not False:
-                    log(f"no Walmart stock for {item['name'][:50]}: {why or 'Walmart offer has 0 stock'}")
+                    log(f"not pinging {item['name'][:50]}: {why or 'Walmart offer has 0 stock'}")
                 seen[key] = False
                 next_check[key] = now + RECHECK_DELAY
                 continue
